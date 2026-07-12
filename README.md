@@ -25,5 +25,4 @@ Every chat turn flows through a guarded LangGraph pipeline (L1 input guard → L
 - Frontend: Next.js (App Router) + React 19, TypeScript 5, Tailwind CSS 4, streaming (NDJSON) chat.
 - Testing: pytest (unit + adversarial corpus), headless graph smoke test, Playwright end-to-end UI suite with per-test screenshots.
 
-Read the details:# guardrail-system-rag
-# guardrail-system-rag
+Read the details: https://aiengineeringinsider.substack.com/p/guardrail-framework-for-llms-automated
