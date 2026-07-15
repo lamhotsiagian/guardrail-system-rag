@@ -1,4 +1,5 @@
 # Guardrail System RAG — Production Recommendation Systems & RAG Course Stack
+E-book: https://shop.beacons.ai/aiengineeringinsider/a95fa6cd-4da1-49e2-b34d-d3f6f9efa2d5
 
 An interactive, chat-driven learning system and production reference architecture for recommendation-system engineering with layered LLM guardrails, built with FastAPI, LangGraph, Ollama, and pgvector, fronted by a modern Next.js / React 19 App Router lab UI. Every recommender concept — explicit/implicit feedback, collaborative and content-based filtering, hybrids, cold-start, evaluation, sequential and neural models, ANN candidate generation, matrix factorization, and production serving/MLOps — is implemented as a real, multi-tenant backend module you can trigger live from the chat interface via **/**-prefixed slash commands.
 
