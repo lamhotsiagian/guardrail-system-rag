@@ -16,13 +16,18 @@ from typing import TYPE_CHECKING
 
 # --- Eager, lightweight ------------------------------------------------------
 from .config import guard_settings
+from .policy import policy_registry
 from .state import GuardedState, GuardVerdict
-from .validators import (INSTRUCTION_PATTERN, PII_PATTERNS, SQL_FRAGMENT_RE,
-                         looks_like_slash, neutralize, normalize_input,
+from .validators import (looks_like_slash, neutralize, normalize_input,
                          redact_pii)
 
 # --- Lazy map: public name -> submodule that defines it ----------------------
+# The legacy pattern constants route through here on purpose: each access
+# resolves against the live policy pack (hot-reload aware) instead of a
+# snapshot taken at import time.
 _LAZY: dict[str, str] = {
+    "PII_PATTERNS": "validators", "INSTRUCTION_PATTERN": "validators",
+    "SQL_FRAGMENT_RE": "validators",
     "input_guard": "input_guard", "InputVerdict": "input_guard",
     "intent_router": "intent_guard", "route_by_intent": "intent_guard",
     "Intent": "intent_guard",
@@ -66,7 +71,7 @@ if TYPE_CHECKING:  # help static analysers / IDEs see the lazy names
     from .tool_gate import DESTRUCTIVE, EXPENSIVE, tool_gate, validate_args
 
 __all__ = [
-    "guard_settings", "GuardedState", "GuardVerdict",
+    "guard_settings", "policy_registry", "GuardedState", "GuardVerdict",
     "normalize_input", "redact_pii", "looks_like_slash", "neutralize",
     "PII_PATTERNS", "SQL_FRAGMENT_RE", "INSTRUCTION_PATTERN",
     "input_guard", "InputVerdict",

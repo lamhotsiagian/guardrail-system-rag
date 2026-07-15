@@ -18,14 +18,22 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import text as sql
 
 from .config import guard_settings
+from .policy import policy_registry
 from .state import GuardedState, GuardVerdict
-from .validators import SQL_FRAGMENT_RE
+from .validators import sql_fragment_re
 
-# Central risk classification: the registry stays the single source of truth
-# for *what exists* (app.course.routes.COMMANDS_REGISTRY); this module owns
-# *how dangerous it is*.
-DESTRUCTIVE: frozenset[str] = frozenset({"reset-tenant-data", "reset-memory"})
-EXPENSIVE: frozenset[str] = frozenset({"catalog-scale", "tenant-users", "memory-session"})
+# Central risk classification: the command registry stays the single source
+# of truth for *what exists* (app.course.routes.COMMANDS_REGISTRY); the
+# policy pack (policies/commands.yaml) owns *how dangerous it is*. The
+# legacy module-level names remain importable as live views of the pack.
+
+
+def __getattr__(name: str):  # PEP 562: legacy constants, now policy-backed
+    if name == "DESTRUCTIVE":
+        return policy_registry.get().commands.destructive
+    if name == "EXPENSIVE":
+        return policy_registry.get().commands.expensive
+    raise AttributeError(f"module 'app.guardrails.tool_gate' has no attribute '{name}'")
 
 
 class CatalogScaleArgs(BaseModel):
@@ -51,7 +59,7 @@ def validate_args(cmd: str, params: dict[str, Any]) -> dict[str, Any]:
     message on violation. SQL-fragment screening applies to every string arg
     regardless of schema, so a future command cannot forget it."""
     for key, val in params.items():
-        if isinstance(val, str) and SQL_FRAGMENT_RE.search(val):
+        if isinstance(val, str) and sql_fragment_re().search(val):
             raise ValueError(f"argument '{key}' contains a disallowed token")
     schema = ARG_SCHEMAS.get(cmd, GenericArgs)
     try:
@@ -86,6 +94,7 @@ async def tool_gate(state: GuardedState) -> Command:
 
     t0 = time.perf_counter()
     cmd, params = parse_slash_command(state["sanitized_input"])
+    policy = policy_registry.get().commands  # one pack snapshot per request
 
     def _verdict(decision: str, detail: str) -> list[dict]:
         return [GuardVerdict(
@@ -93,8 +102,9 @@ async def tool_gate(state: GuardedState) -> Command:
             latency_ms=(time.perf_counter() - t0) * 1000,
         ).model_dump()]
 
-    # 1. Closed allowlist — registry + explicit guardrail test commands decide what exists.
-    ALLOWED_COMMANDS = COMMANDS_REGISTRY.keys() | DESTRUCTIVE | EXPENSIVE | {"catalog"}
+    # 1. Closed allowlist — registry + policy risk classes decide what exists.
+    ALLOWED_COMMANDS = (COMMANDS_REGISTRY.keys() | policy.destructive
+                        | policy.expensive | policy.extra_allowed)
     if cmd not in ALLOWED_COMMANDS:
         return Command(goto="unknown_command_response",
                        update={"guard_verdicts": _verdict("block", f"unknown {cmd}")})
@@ -108,7 +118,7 @@ async def tool_gate(state: GuardedState) -> Command:
 
     # 3. HITL for destructive ops — LangGraph interrupt; the Postgres
     #    checkpointer parks the run until the UI resumes it with a decision.
-    if cmd in DESTRUCTIVE:
+    if cmd in policy.destructive:
         decision = interrupt({
             "kind": "confirm_destructive",
             "command": cmd,
@@ -121,7 +131,7 @@ async def tool_gate(state: GuardedState) -> Command:
                            update={"guard_verdicts": _verdict("block", f"{cmd}: user declined")})
 
     # 4. Per-tenant daily budget for expensive generation commands.
-    if cmd in EXPENSIVE:
+    if cmd in policy.expensive:
         used = await _daily_command_count(state["tenant_id"], cmd)
         if used >= guard_settings.expensive_command_daily_cap:
             return Command(goto="budget_exceeded_response",

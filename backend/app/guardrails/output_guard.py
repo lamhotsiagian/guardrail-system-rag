@@ -25,7 +25,7 @@ from app.course.schemas import CommandResponse
 from .config import guard_settings
 from .llm_json import as_float, json_complete, make_json_model
 from .state import GuardedState, GuardVerdict
-from .validators import PII_PATTERNS
+from .validators import pii_patterns
 
 PROFANITY_RE = re.compile(r"(?i)\b(fuck|shit|bitch|asshole|cunt)\b")
 _SENTENCE_END = re.compile(r"[.!?]\s")
@@ -75,7 +75,7 @@ class StreamGuard:
         self.tripped = False
 
     def _scan(self, sentence: str) -> str | None:
-        for pii_type, pattern in PII_PATTERNS.items():
+        for pii_type, pattern in pii_patterns().items():
             if pattern.search(sentence):
                 return f"pii:{pii_type}"
         if PROFANITY_RE.search(sentence):
