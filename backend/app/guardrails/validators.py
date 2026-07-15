@@ -3,40 +3,61 @@
 Tier-0 guards. Everything in this module is pure code — no model calls, no
 database — so it runs in microseconds and is trivially unit-testable
 (``tests/guardrails/test_input_guard.py``).
+
+The *rules* these validators enforce (PII regexes, injection heuristics,
+SQL-fragment screens) no longer live here: they are data, loaded from the
+versioned policy pack under ``policies/`` via
+``app.guardrails.policy.policy_registry`` and hot-reloadable without a
+restart. This module keeps only the *mechanics* (how to redact, how to
+neutralize) plus PEP 562 shims so the legacy constant names
+(``PII_PATTERNS``, ``INSTRUCTION_PATTERN``, ``SQL_FRAGMENT_RE``) keep
+working for existing imports and tests.
 """
 
 import re
 import unicodedata
 
 from .config import guard_settings
+from .policy import policy_registry
 
 # --- Slash-command shape (mirrors app.course.routes.parse_slash_command) ----
+# Structural, not policy: this mirrors the command parser, so it versions
+# with the code, not with the policy pack.
 SLASH_RE = re.compile(r"^/[a-z][a-z0-9-]*")
 
-# --- PII patterns ------------------------------------------------------------
-# Deterministic redaction before any text reaches the LLM, the embedder, or a
-# memory record. Swap in Microsoft Presidio for entity-level NER if the
-# deployment's privacy bar requires it; keep these regexes as the fast path.
-PII_PATTERNS: dict[str, re.Pattern] = {
-    "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
-    "phone": re.compile(r"\b(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?)?\d{3,4}[\s.-]?\d{4}\b"),
-    "credit_card": re.compile(r"\b(?:\d[ -]?){13,19}\b"),
-    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-}
 
-# --- Indirect-injection heuristics for retrieved chunks (L6) ------------------
-# Instruction-shaped text inside reference documents is the signature of
-# indirect prompt injection (Greshake et al., 2023).
-INSTRUCTION_PATTERN = re.compile(
-    r"(?i)\b(ignore (all|previous|above)|disregard (the|all|previous)"
-    r"|you are now|new instructions?:|system prompt|do not follow"
-    r"|instead,? (do|say|run|execute)|run the command|type /)",
-)
+# --- Policy accessors ---------------------------------------------------------
+# Call sites should prefer these functions: each call sees the *current*
+# pack, so a hot-reloaded rule change applies to the very next request.
 
-# --- Suspicious argument content for slash commands (L5) ---------------------
-SQL_FRAGMENT_RE = re.compile(
-    r"(?i)(;|--|\b(drop|delete|truncate|update|insert|alter|grant)\b)"
-)
+def pii_patterns() -> dict[str, re.Pattern]:
+    """Enabled PII rules from the live policy pack."""
+    return policy_registry.get().pii.compiled
+
+
+def instruction_pattern():
+    """Combined indirect-injection matcher from the live policy pack
+    (a ``CombinedPattern``; supports ``.search`` like ``re.Pattern``).
+
+    Instruction-shaped text inside reference documents is the signature of
+    indirect prompt injection (Greshake et al., 2023).
+    """
+    return policy_registry.get().injection.combined
+
+
+def sql_fragment_re() -> re.Pattern:
+    """SQL-fragment screen for slash-command arguments (L5)."""
+    return policy_registry.get().commands.sql_fragment.compiled
+
+
+def __getattr__(name: str):  # PEP 562: legacy constant names, now live views
+    if name == "PII_PATTERNS":
+        return pii_patterns()
+    if name == "INSTRUCTION_PATTERN":
+        return instruction_pattern()
+    if name == "SQL_FRAGMENT_RE":
+        return sql_fragment_re()
+    raise AttributeError(f"module 'app.guardrails.validators' has no attribute '{name}'")
 
 
 def normalize_input(raw: str, max_chars: int | None = None) -> str:
@@ -59,7 +80,7 @@ def redact_pii(text: str) -> tuple[str, dict[str, int]]:
     can log *that* redaction happened without logging *what* was redacted.
     """
     counts: dict[str, int] = {}
-    for pii_type, pattern in PII_PATTERNS.items():
+    for pii_type, pattern in pii_patterns().items():
         text, n = pattern.subn(f"[{pii_type.upper()}_REDACTED]", text)
         if n:
             counts[pii_type] = n
@@ -72,9 +93,10 @@ def neutralize(chunk_text: str) -> str:
     We keep the chunk (it may still carry useful content) but wrap the
     offending lines so the generator sees them as quoted data, not directives.
     """
+    pattern = instruction_pattern()
     lines = []
     for line in chunk_text.splitlines():
-        if INSTRUCTION_PATTERN.search(line):
+        if pattern.search(line):
             lines.append(f"[quoted, non-instructional text] {line}")
         else:
             lines.append(line)

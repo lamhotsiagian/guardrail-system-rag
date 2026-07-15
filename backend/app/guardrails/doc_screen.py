@@ -20,7 +20,7 @@ from loguru import logger
 
 from .config import guard_settings
 from .state import GuardedState, GuardVerdict
-from .validators import INSTRUCTION_PATTERN, neutralize
+from .validators import instruction_pattern, neutralize
 
 # One line added to the RAG system prompt (app/chat/prompts.py):
 CONTEXT_CONTRACT = (
@@ -52,8 +52,9 @@ async def doc_screen(state: GuardedState) -> Command:
 
     # 2. Indirect-injection scan and neutralization.
     neutralized = 0
+    injection_re = instruction_pattern()  # live view of the policy pack
     for d in kept:
-        if INSTRUCTION_PATTERN.search(d.page_content):
+        if injection_re.search(d.page_content):
             logger.warning("doc_screen neutralized instruction-like chunk "
                            "(source={})", d.metadata.get("source", "?"))
             d.page_content = neutralize(d.page_content)
